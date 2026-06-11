@@ -1,47 +1,55 @@
-# Heliolytics — Architecture (To Be Filled In)
+# Heliolytics — Go API Architecture
 
-> **Status:** Placeholder. Will be filled in as we discover the data and design decisions.
+## Platform (3 repos)
 
-## High-Level Overview
+| Repo | Role |
+|------|------|
+| **Heliolytics** (this repo) | Go ingest API, PostgreSQL, Docker deploy |
+| **Heliolytics_App** | Flutter mobile — BLE sync, upload raw sessions |
+| **Heliolytics_Web** | Next.js dashboard — read metrics from API |
+
+Clone all three as sibling folders under the same parent directory so `deploy/docker-compose.yml` can build the web service from `../../Heliolytics_Web`.
+
+## Data flow
 
 ```
-┌──────────────┐
-│  Helio Ring  │
-└──────┬───────┘
-       │ BLE
-       v
-┌──────────────┐
-│  Mobile App  │
-└──────┬───────┘
-       │ ?
-       v
-┌──────────────┐
-│  Database    │
-└──────────────┘
+Helio Strap ──BLE──► Flutter (raw .bin + JSON on device)
+                         │ POST /api/v1/ingest (multipart, HMAC token)
+                         ▼
+                    Go API (parse raw → metrics)
+                         │
+                         ▼
+                    PostgreSQL / TimescaleDB
+                    ╱         ╲
+              Next.js web    Flutter (GET metrics only)
 ```
 
-## Decisions to Make
+## Auth
 
-- [ ] **Tech stack** — What language/framework for mobile? What for backend (if any)?
-- [ ] **Data flow** — Mobile-only? Or add a backend?
-- [ ] **Storage** — Local DB? Cloud? Both?
-- [ ] **Data format** — What does the strap actually send? (To be discovered)
-- [ ] **Analytics** — What metrics to compute? (To be researched)
-- [ ] **UI** — What does the dashboard look like? (To be designed)
+- **Strap:** 32-char hex key, ECDH + AES (Flutter secure storage, BLE only)
+- **API (app + server):** `HELIOLYTICS_SIGNING_SECRET` signs short-lived HMAC tokens (`X-Heliolytics-Token`, 5-minute window, nonce replay rejected)
+- **Web dashboard:** password sign-in (`HELIOLYTICS_WEB_PASSWORD`); signing secret stays server-side in Docker
+- **Reparse:** disabled by default; enable with `REPARSE_ENABLED=true` + optional `REPARSE_SECRET` header
 
-## Current Status
+## TLS
 
-**Just starting.** First step: build a basic app that can connect to the strap and see what data it sends.
+Caddy terminates HTTPS on port 443 (`deploy/Caddyfile`). API and web remain HTTP inside Docker; set `TRUST_PROXY=true` on the API when behind Caddy.
 
-## Reference: What Already Exists
+## Layout
 
-I have an existing Android Kotlin app (Helio) that already does BLE + parsing. I can use it as a reference for the protocol, but I'm building this from scratch to make my own decisions.
+```
+cmd/server/          Entry point
+internal/api/        HTTP handlers
+internal/parse/      BLE blob parsers
+internal/store/      PostgreSQL (sqlc queries)
+schema.sql           Full Postgres schema (fresh DB init)
+deploy/              docker-compose + Caddy + install.sh
+```
 
-## Next Steps
+## Deploy
 
-1. Create new repo
-2. Set up Flutter project
-3. Add BLE scanning
-4. Connect to the ring
-5. Dump raw bytes
-6. Document what I find
+```bash
+cd deploy
+cp .env.example .env
+./install.sh
+```
