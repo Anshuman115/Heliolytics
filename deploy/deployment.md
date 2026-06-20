@@ -60,9 +60,11 @@ POSTGRES_PASSWORD=<your db password>
 
 API_PORT=8080
 WEB_PORT=3000
-HTTPS_PORT=443
+CLOUDFLARE_TUNNEL_TOKEN=
 REPARSE_ENABLED=false
 ```
+
+Leave `CLOUDFLARE_TUNNEL_TOKEN` empty for local dev (skip tunnel; use localhost ports).
 
 ### 1.3 Start the stack
 
@@ -74,15 +76,16 @@ chmod +x install.sh reset-db.sh
 Wait ~1–2 minutes, then verify:
 
 ```bash
-curl http://localhost:8080/health   # should print: ok
-docker compose ps                  # all services should be "healthy"
+curl http://127.0.0.1:8080/health   # should print: ok
+docker compose ps                     # api, web, db healthy; cloudflared may restart if no token
 ```
 
 | Service | URL |
 |---------|-----|
-| API | http://localhost:8080/health |
-| Web dashboard | http://localhost:3000/login |
-| HTTPS (Caddy, self-signed) | https://localhost (browser warning is expected in dev) |
+| API | http://127.0.0.1:8080/health |
+| Web dashboard | http://127.0.0.1:3000/login |
+
+> API and web bind to **127.0.0.1** only — not exposed on the public internet. Production HTTPS uses Cloudflare Tunnel (Part 2).
 
 ### 1.4 Mobile app — dev
 
@@ -113,152 +116,95 @@ docker compose down
 
 ---
 
-## Part 2 — Production (VPS + custom domain)
+## Part 2 — Production (VPS + Cloudflare Tunnel)
+
+HTTPS terminates at **Cloudflare** (orange proxy). The VPS runs `cloudflared` — **no Caddy**, **no open ports 80/443** on Oracle.
+
+Example domain: **anshuman115.in** on Cloudflare DNS.
+
+---
 
 ### 2.1 What you need
 
-1. A **VPS** — 1 vCPU, 2 GB RAM, 20 GB disk is enough to start.
-   Providers: DigitalOcean, Hetzner, Linode, Oracle Cloud free tier, etc.
-2. **Ubuntu 22.04 or 24.04** on the VPS.
-3. **SSH access** as root or a sudo user.
-4. A **domain name** with access to DNS settings.
-
-Replace `YOUR_VPS_IP` and `<your-domain>` throughout the steps below with your real values.
+1. **VPS** — 1 vCPU, 2 GB RAM (Oracle Cloud free tier works).
+2. **Ubuntu 22.04 or 24.04** + SSH.
+3. Domain on **Cloudflare** (nameservers pointed to Cloudflare).
+4. **Cloudflare Zero Trust** (free tier) for tunnels.
 
 ---
 
-### 2.2 DNS — point subdomains to the VPS
+### 2.2 Create the tunnel (Cloudflare dashboard)
 
-In your DNS panel, add two A records:
+1. [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) → **Networks** → **Tunnels** → **Create a tunnel**.
+2. Connector type: **Cloudflared**.
+3. Name: `heliolytics` → Save.
+4. **Public Hostnames** — add one row per service:
 
-| Type | Name | Value | TTL |
-|------|------|-------|-----|
-| A | `api.heliolytics` | `YOUR_VPS_IP` | 300 |
-| A | `heliolytics-dashboard` | `YOUR_VPS_IP` | 300 |
+| Public hostname | Service type | URL (Docker network) |
+|-----------------|--------------|----------------------|
+| `api.heliolytics.anshuman115.in` | HTTP | `http://api:8080` |
+| `dashboard.heliolytics.anshuman115.in` | HTTP | `http://web:3000` |
 
-Wait 5–30 minutes, then verify from your local machine:
+Cloudflare creates DNS records (CNAME to tunnel) automatically — **no manual A records**, no grey/orange choice needed (proxied by default).
 
-```bash
-dig +short api.heliolytics.<your-domain>
-dig +short heliolytics-dashboard.<your-domain>
-# both should print YOUR_VPS_IP
-```
+5. Copy the **tunnel token** (long string starting with `eyJ...`).
 
-Do not continue until DNS resolves correctly.
+**Many services?** Add more public hostname rows — each maps a subdomain to `http://<service>:<port>` on the Docker network. Ten services = ten rows. Non-Docker apps on the VM: use `http://host.docker.internal:PORT` (Linux: add `extra_hosts: ["host.docker.internal:host-gateway"]` on the `cloudflared` service).
 
 ---
 
-### 2.3 VPS — initial setup
+### 2.3 VPS setup
 
 ```bash
-ssh root@YOUR_VPS_IP
+ssh ubuntu@YOUR_VPS_IP
 
-# Update system and install Docker
-apt update && apt upgrade -y
-apt install -y git curl ca-certificates ufw
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y git curl ca-certificates ufw
 curl -fsSL https://get.docker.com | sh
-systemctl enable docker && systemctl start docker
+sudo usermod -aG docker $USER
+# log out and back in
 
-# Firewall — allow SSH + web only
-ufw allow OpenSSH
-ufw allow 80/tcp
-ufw allow 443/tcp
-ufw enable
+sudo ufw allow OpenSSH
+sudo ufw enable
 ```
 
-Do **not** expose ports 8080 or 3000 publicly — Caddy handles all inbound traffic on 80/443.
+**Do not open 80, 443, 8080, or 3000** on Oracle security list or UFW. Only **22** (SSH). Tunnel is outbound from VM → Cloudflare.
 
 ---
 
-### 2.4 Clone repos on the VPS
+### 2.4 Clone repos (home directory example)
 
 ```bash
-mkdir -p /opt/heliolytics && cd /opt/heliolytics
+mkdir -p ~/heliolytics && cd ~/heliolytics
 
-git clone <your-Heliolytics-repo-url>     Heliolytics
-git clone <your-Heliolytics_Web-repo-url> Heliolytics_Web
-git clone <your-Heliolytics_App-repo-url> Heliolytics_App
+git clone -b v2 <Heliolytics-repo-url>     Heliolytics
+git clone -b v2 <Heliolytics_Web-repo-url> Heliolytics_Web
 ```
 
 ---
 
-### 2.5 Production environment file
+### 2.5 Environment file
 
 ```bash
-cd /opt/heliolytics/Heliolytics/deploy
+cd ~/heliolytics/Heliolytics/deploy
 cp .env.example .env
 nano .env
-```
-
-Use **new** secrets (different from dev):
-
-```env
-HELIOLYTICS_SIGNING_SECRET=<openssl rand -hex 32>
-HELIOLYTICS_WEB_PASSWORD=<strong unique password>
-POSTGRES_PASSWORD=<strong unique password>
-
-API_PORT=8080
-WEB_PORT=3000
-HTTPS_PORT=443
-REPARSE_ENABLED=false
-```
-
-Lock file permissions:
-
-```bash
 chmod 600 .env
 ```
 
----
-
-### 2.6 Production Caddyfile
-
-Replace the dev `Caddyfile` with your real domain names:
-
-```caddy
-api.heliolytics.<your-domain> {
-    reverse_proxy api:8080
-}
-
-heliolytics-dashboard.<your-domain> {
-    reverse_proxy web:3000
-}
-```
-
-Caddy automatically obtains TLS certificates from Let's Encrypt and redirects HTTP → HTTPS.
-
-**Requirements:** DNS must resolve to this server; ports 80 and 443 must be open.
-
----
-
-### 2.7 Expose ports 80 and 443 in docker-compose
-
-Edit the `caddy:` service in `docker-compose.yml`:
-
-```yaml
-    ports:
-      - "80:80"
-      - "443:443"
-```
-
-Optionally bind the API and web services to localhost only (prevents direct internet access):
-
-```yaml
-  api:
-    ports:
-      - "127.0.0.1:8080:8080"
-
-  web:
-    ports:
-      - "127.0.0.1:3000:3000"
+```env
+HELIOLYTICS_SIGNING_SECRET=<openssl rand -hex 32>
+HELIOLYTICS_WEB_PASSWORD=<strong password>
+POSTGRES_PASSWORD=<openssl rand -hex 32>
+CLOUDFLARE_TUNNEL_TOKEN=<paste token from step 2.2>
+REPARSE_ENABLED=false
 ```
 
 ---
 
-### 2.8 Start production stack
+### 2.6 Start stack
 
 ```bash
-cd /opt/heliolytics/Heliolytics/deploy
 chmod +x install.sh
 ./install.sh
 ```
@@ -266,93 +212,67 @@ chmod +x install.sh
 Verify:
 
 ```bash
-docker compose ps
-curl -s https://api.heliolytics.<your-domain>/health    # ok
-curl -I https://heliolytics-dashboard.<your-domain>/login  # HTTP/2 200
+docker compose ps                    # api, web, db, cloudflared all up
+docker compose logs cloudflared      # "Registered tunnel connection"
+curl -s https://api.heliolytics.anshuman115.in/health    # ok
 ```
 
-If Caddy logs show certificate errors:
-- DNS not propagated yet — wait, then `docker compose restart caddy`
-- Port 80 blocked — check `ufw` and your VPS provider's firewall/security group settings
+Web: `https://dashboard.heliolytics.anshuman115.in/login`
 
 ---
 
-### 2.9 Mobile app — production
+### 2.7 Mobile app — production
 
-Build a **release** APK on your development machine:
+On your Mac:
 
 ```bash
-cd path/to/Heliolytics_App
-flutter pub get
-flutter build apk --release
-# APK: build/app/outputs/flutter-apk/app-release.apk
+cd Heliolytics_App && git checkout v2
+flutter build apk --release \
+  --dart-define=API_URL=https://api.heliolytics.anshuman115.in \
+  --dart-define=API_SIGNING_SECRET=<HELIOLYTICS_SIGNING_SECRET>
 ```
 
-Transfer to your phone and install. In the app: **Settings → Cloud API**
-
-| Field | Value |
-|-------|-------|
-| API base URL | `https://api.heliolytics.<your-domain>` |
-| API key | value of `HELIOLYTICS_SIGNING_SECRET` from VPS `deploy/.env` |
-
-Tap **Test connection** — must succeed over HTTPS.
-
-> Release builds reject `http://` URLs. Always use the `https://` URL.
+Install APK → **Settings → Cloud API** → Test connection → sync strap.
 
 ---
 
-### 2.10 Production checklist
+### 2.8 Production checklist
 
-- [ ] DNS A records for both subdomains → VPS IP
-- [ ] `dig` returns correct IP for both hostnames
-- [ ] UFW: only ports 22, 80, 443 open
-- [ ] `deploy/.env` uses unique secrets (not dev defaults), permissions `600`
-- [ ] `Caddyfile` uses your production hostnames
-- [ ] `docker compose ps` — all services healthy
-- [ ] `curl https://api.heliolytics.<your-domain>/health` → `ok`
-- [ ] Web login works at the dashboard URL
-- [ ] Mobile app: HTTPS URL + API key tested successfully
+- [ ] Tunnel public hostnames match your real domain
+- [ ] `CLOUDFLARE_TUNNEL_TOKEN` in `.env`, permissions `600`
+- [ ] Oracle security list: **SSH only** (no inbound 80/443)
+- [ ] `docker compose ps` — all healthy, cloudflared connected
+- [ ] `curl https://api.heliolytics.anshuman115.in/health` → `ok`
+- [ ] Dashboard login works
+- [ ] Release APK uses **https://** API URL
 
 ---
 
-### 2.11 Updating after code changes
+### 2.9 Updating after code changes
 
 ```bash
-cd /opt/heliolytics/Heliolytics && git pull
-cd /opt/heliolytics/Heliolytics_Web && git pull
-cd /opt/heliolytics/Heliolytics/deploy
-docker compose build
-docker compose up -d
-```
-
-If `schema.sql` changed:
-
-```bash
-./reset-db.sh   # WARNING: deletes all stored data
+cd ~/heliolytics/Heliolytics && git pull origin v2
+cd ~/heliolytics/Heliolytics_Web && git pull origin v2
+cd ~/heliolytics/Heliolytics/deploy
+docker compose build && docker compose up -d
 ```
 
 ---
 
-### 2.12 Troubleshooting
+### 2.10 Troubleshooting
 
-| Problem | What to check |
-|---------|---------------|
-| `dig` does not return VPS IP | DNS propagation — wait and retry |
-| Caddy certificate failed | Port 80 open; DNS correct; `docker compose logs caddy` |
-| Web login fails | `HELIOLYTICS_WEB_PASSWORD` in `.env`; `docker compose restart web` |
-| App "Test connection" fails | HTTPS URL correct (no trailing slash); API key matches `.env` |
-| App works on Wi-Fi but not mobile data | API must be on public HTTPS, not a LAN IP |
-| `401` from API | Wrong API key in app settings |
-| Empty dashboard | Sync from the app first; check `docker compose logs api` during upload |
-| API unhealthy | `docker compose logs db api`; DB password in `.env` matches `DATABASE_URL` |
-
-View logs:
+| Problem | Fix |
+|---------|-----|
+| `cloudflared` restart loop | Token missing/wrong in `.env` |
+| 502 from Cloudflare | `docker compose ps` — api/web unhealthy; check logs |
+| Wrong service on hostname | Fix public hostname URL in Zero Trust (must match Docker service name) |
+| App fails off Wi-Fi | API URL must be public `https://` hostname, not LAN IP |
+| `401` from API | API key in app ≠ `HELIOLYTICS_SIGNING_SECRET` |
 
 ```bash
+docker compose logs -f cloudflared
 docker compose logs -f api
 docker compose logs -f web
-docker compose logs -f caddy
-docker compose logs -f db
 ```
 
 ---
@@ -360,19 +280,15 @@ docker compose logs -f db
 ## Architecture
 
 ```
-Mobile app ──HTTPS──► api.heliolytics.<your-domain>
+Mobile app ──HTTPS──► Cloudflare edge
                               │
-                         Caddy :443
-                              │
-                         Go API :8080
-                              │
+                         cloudflared (Docker)
+                         ╱         ╲
+                   api:8080      web:3000
+                         ╲         ╱
                          PostgreSQL
 
-Browser ──HTTPS──► heliolytics-dashboard.<your-domain>
-                              │
-                         Caddy :443
-                              │
-                         Next.js :3000 ──internal──► Go API :8080
+Browser ──HTTPS──► Cloudflare edge ──► cloudflared ──► web:3000 ──► api:8080 (internal)
 ```
 
-Both subdomains point to the same VPS. Caddy routes by hostname to either the API container or the web container.
+No inbound web ports on the VPS. Each public hostname in Zero Trust maps to a different internal `service:port`.

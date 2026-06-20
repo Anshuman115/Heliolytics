@@ -33,7 +33,7 @@ Helio Strap ──BLE──► Flutter (raw .bin + JSON on device)
 
 ## TLS
 
-Caddy terminates HTTPS on port 443 (`deploy/Caddyfile`). API and web remain HTTP inside Docker; set `TRUST_PROXY=true` on the API when behind Caddy.
+Cloudflare Tunnel (`cloudflared` in `deploy/docker-compose.yml`) terminates HTTPS at the edge. API and web stay HTTP on the Docker network; `TRUST_PROXY=true` on the API trusts Cloudflare proxy headers.
 
 ## Layout
 
@@ -43,7 +43,7 @@ internal/api/        HTTP handlers
 internal/parse/      BLE blob parsers
 internal/store/      PostgreSQL (sqlc queries)
 schema.sql           Full Postgres schema (fresh DB init)
-deploy/              docker-compose + Caddy + install.sh
+deploy/              docker-compose + cloudflared + install.sh
 ```
 
 ## Deploy
