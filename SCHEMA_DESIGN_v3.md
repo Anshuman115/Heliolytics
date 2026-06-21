@@ -77,7 +77,7 @@ CREATE TABLE heart_rate_samples (
 - **No `source` column** — v3 only ingests `0x46`
 - **Upsert:** `ON CONFLICT (sampled_at) DO UPDATE SET bpm = EXCLUDED.bpm, …`
 
-Zepp “live HR every second” on watch face = real-time UI. Historical continuous HR in our DB = whatever the band wrote into **`0x46`** blobs during PPG sessions.
+Helio Strap live HR on watch face = real-time UI. Historical continuous HR in our DB = whatever the band wrote into **`0x46`** blobs during PPG sessions.
 
 ---
 
