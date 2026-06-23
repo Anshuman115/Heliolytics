@@ -112,6 +112,10 @@ docker compose down
 
 # Wipe DB and re-apply schema (deletes all data)
 ./reset-db.sh
+
+# Redeploy ONLY the web dashboard (db/api stay up, no API downtime)
+./deploy-web.sh            # build from the current Heliolytics_Web checkout
+PULL=1 ./deploy-web.sh     # git pull the web repo first, then rebuild
 ```
 
 ---
