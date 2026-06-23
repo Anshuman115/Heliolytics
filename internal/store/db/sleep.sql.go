@@ -11,15 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const deleteSleepBySession = `-- name: DeleteSleepBySession :exec
-DELETE FROM sleep_sessions WHERE sync_session_id = $1
-`
-
-func (q *Queries) DeleteSleepBySession(ctx context.Context, syncSessionID string) error {
-	_, err := q.db.Exec(ctx, deleteSleepBySession, syncSessionID)
-	return err
-}
-
 const listSleep = `-- name: ListSleep :many
 SELECT day_key, started_at, score, total_mins, deep_mins, rem_mins, light_mins,
        wake_mins, is_nap, stages_json
@@ -29,12 +20,12 @@ ORDER BY started_at DESC
 `
 
 type ListSleepParams struct {
-	DayKey   string `json:"day_key"`
-	DayKey_2 string `json:"day_key_2"`
+	DayKey   pgtype.Date `json:"day_key"`
+	DayKey_2 pgtype.Date `json:"day_key_2"`
 }
 
 type ListSleepRow struct {
-	DayKey     string             `json:"day_key"`
+	DayKey     pgtype.Date        `json:"day_key"`
 	StartedAt  pgtype.Timestamptz `json:"started_at"`
 	Score      int32              `json:"score"`
 	TotalMins  int32              `json:"total_mins"`
@@ -78,10 +69,11 @@ func (q *Queries) ListSleep(ctx context.Context, arg ListSleepParams) ([]ListSle
 }
 
 const upsertSleepSession = `-- name: UpsertSleepSession :exec
-INSERT INTO sleep_sessions (sync_session_id, day_key, started_at, score,
+INSERT INTO sleep_sessions (source_session_id, day_key, started_at, score,
   total_mins, deep_mins, rem_mins, light_mins, wake_mins, is_nap, stages_json)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-ON CONFLICT (sync_session_id, started_at) DO UPDATE SET
+ON CONFLICT (started_at, day_key) DO UPDATE SET
+  source_session_id = EXCLUDED.source_session_id,
   score = EXCLUDED.score,
   total_mins = EXCLUDED.total_mins,
   deep_mins = EXCLUDED.deep_mins,
@@ -89,26 +81,27 @@ ON CONFLICT (sync_session_id, started_at) DO UPDATE SET
   light_mins = EXCLUDED.light_mins,
   wake_mins = EXCLUDED.wake_mins,
   is_nap = EXCLUDED.is_nap,
-  stages_json = EXCLUDED.stages_json
+  stages_json = EXCLUDED.stages_json,
+  updated_at = NOW()
 `
 
 type UpsertSleepSessionParams struct {
-	SyncSessionID string             `json:"sync_session_id"`
-	DayKey        string             `json:"day_key"`
-	StartedAt     pgtype.Timestamptz `json:"started_at"`
-	Score         int32              `json:"score"`
-	TotalMins     int32              `json:"total_mins"`
-	DeepMins      int32              `json:"deep_mins"`
-	RemMins       int32              `json:"rem_mins"`
-	LightMins     int32              `json:"light_mins"`
-	WakeMins      int32              `json:"wake_mins"`
-	IsNap         bool               `json:"is_nap"`
-	StagesJson    []byte             `json:"stages_json"`
+	SourceSessionID string             `json:"source_session_id"`
+	DayKey          pgtype.Date        `json:"day_key"`
+	StartedAt       pgtype.Timestamptz `json:"started_at"`
+	Score           int32              `json:"score"`
+	TotalMins       int32              `json:"total_mins"`
+	DeepMins        int32              `json:"deep_mins"`
+	RemMins         int32              `json:"rem_mins"`
+	LightMins       int32              `json:"light_mins"`
+	WakeMins        int32              `json:"wake_mins"`
+	IsNap           bool               `json:"is_nap"`
+	StagesJson      []byte             `json:"stages_json"`
 }
 
 func (q *Queries) UpsertSleepSession(ctx context.Context, arg UpsertSleepSessionParams) error {
 	_, err := q.db.Exec(ctx, upsertSleepSession,
-		arg.SyncSessionID,
+		arg.SourceSessionID,
 		arg.DayKey,
 		arg.StartedAt,
 		arg.Score,

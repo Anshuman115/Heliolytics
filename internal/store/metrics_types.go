@@ -10,7 +10,6 @@ type DayMetric struct {
 	Spo2Avg        *int      `json:"spo2Avg,omitempty"`
 	HrvRmssd       *int      `json:"hrvRmssd,omitempty"`
 	RestingHr      *int      `json:"restingHr,omitempty"`
-	MaxHr          *int      `json:"maxHr,omitempty"`
 	RespRateAvg    *int      `json:"respRateAvg,omitempty"`
 	StressAvg      *int      `json:"stressAvg,omitempty"`
 	SleepScore     *int      `json:"sleepScore,omitempty"`
@@ -39,39 +38,36 @@ type SleepMetric struct {
 }
 
 type SleepRow struct {
-	SyncSessionID string
-	DayKey        string
-	StartedAt     time.Time
-	Score         int
-	TotalMins     int
-	DeepMins      int
-	RemMins       int
-	LightMins     int
-	WakeMins      int
-	IsNap         bool
-	Stages        []SleepStagePoint
+	DayKey    string
+	StartedAt time.Time
+	Score     int
+	TotalMins int
+	DeepMins  int
+	RemMins   int
+	LightMins int
+	WakeMins  int
+	IsNap     bool
+	Stages    []SleepStagePoint
 }
 
 type WorkoutRow struct {
-	SyncSessionID string
-	DayKey        string
-	StartedAt     time.Time
-	SportType     int
-	SportName     string
-	DurationSec   int
-	Calories      *int
-	AvgHr         *int
-	MaxHr         *int
+	DayKey      string
+	StartedAt   time.Time
+	SportType   int
+	SportName   string
+	DurationSec int
+	Calories    *int
+	AvgHr       *int
+	MaxHr       *int
 }
 
 type ActivitySessionRow struct {
-	SyncSessionID string
-	DayKey        string
-	StartedAt     time.Time
-	SportType     int
-	SportName     string
-	DurationSec   int
-	Calories      *int
-	AvgHr         *int
-	MaxHr         *int
+	DayKey      string
+	StartedAt   time.Time
+	SportType   int
+	SportName   string
+	DurationSec int
+	Calories    *int
+	AvgHr       *int
+	MaxHr       *int
 }

@@ -11,37 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const deleteTemperatureBySession = `-- name: DeleteTemperatureBySession :exec
-DELETE FROM temperature_samples WHERE sync_session_id = $1
-`
-
-func (q *Queries) DeleteTemperatureBySession(ctx context.Context, syncSessionID string) error {
-	_, err := q.db.Exec(ctx, deleteTemperatureBySession, syncSessionID)
-	return err
-}
-
-const insertTemperatureSample = `-- name: InsertTemperatureSample :exec
-INSERT INTO temperature_samples (sync_session_id, day_key, sampled_at, celsius)
-VALUES ($1, $2, $3, $4)
-`
-
-type InsertTemperatureSampleParams struct {
-	SyncSessionID string             `json:"sync_session_id"`
-	DayKey        string             `json:"day_key"`
-	SampledAt     pgtype.Timestamptz `json:"sampled_at"`
-	Celsius       pgtype.Numeric     `json:"celsius"`
-}
-
-func (q *Queries) InsertTemperatureSample(ctx context.Context, arg InsertTemperatureSampleParams) error {
-	_, err := q.db.Exec(ctx, insertTemperatureSample,
-		arg.SyncSessionID,
-		arg.DayKey,
-		arg.SampledAt,
-		arg.Celsius,
-	)
-	return err
-}
-
 const listTemperature = `-- name: ListTemperature :many
 SELECT day_key, sampled_at, celsius
 FROM temperature_samples
@@ -50,12 +19,12 @@ ORDER BY sampled_at ASC
 `
 
 type ListTemperatureParams struct {
-	DayKey   string `json:"day_key"`
-	DayKey_2 string `json:"day_key_2"`
+	DayKey   pgtype.Date `json:"day_key"`
+	DayKey_2 pgtype.Date `json:"day_key_2"`
 }
 
 type ListTemperatureRow struct {
-	DayKey    string             `json:"day_key"`
+	DayKey    pgtype.Date        `json:"day_key"`
 	SampledAt pgtype.Timestamptz `json:"sampled_at"`
 	Celsius   pgtype.Numeric     `json:"celsius"`
 }
@@ -78,4 +47,87 @@ func (q *Queries) ListTemperature(ctx context.Context, arg ListTemperatureParams
 		return nil, err
 	}
 	return items, nil
+}
+
+const listTemperatureCompact = `-- name: ListTemperatureCompact :many
+WITH computed AS (
+  SELECT
+    day_key,
+    sampled_at,
+    celsius,
+    (MIN(sampled_at) OVER(PARTITION BY day_key))::timestamptz as day_start
+  FROM temperature_samples
+  WHERE day_key >= $1 AND day_key <= $2
+)
+SELECT
+  day_key,
+  day_start as start_time,
+  array_agg(EXTRACT(EPOCH FROM (sampled_at - day_start))::int ORDER BY sampled_at)::int[] as offsets,
+  array_agg(celsius::float8 ORDER BY sampled_at)::float8[] as values
+FROM computed
+GROUP BY day_key, day_start
+ORDER BY day_key ASC
+`
+
+type ListTemperatureCompactParams struct {
+	DayKey   pgtype.Date `json:"day_key"`
+	DayKey_2 pgtype.Date `json:"day_key_2"`
+}
+
+type ListTemperatureCompactRow struct {
+	DayKey    pgtype.Date        `json:"day_key"`
+	StartTime pgtype.Timestamptz `json:"start_time"`
+	Offsets   []int32            `json:"offsets"`
+	Values    []float64          `json:"values"`
+}
+
+func (q *Queries) ListTemperatureCompact(ctx context.Context, arg ListTemperatureCompactParams) ([]ListTemperatureCompactRow, error) {
+	rows, err := q.db.Query(ctx, listTemperatureCompact, arg.DayKey, arg.DayKey_2)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListTemperatureCompactRow{}
+	for rows.Next() {
+		var i ListTemperatureCompactRow
+		if err := rows.Scan(
+			&i.DayKey,
+			&i.StartTime,
+			&i.Offsets,
+			&i.Values,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const upsertTemperatureSample = `-- name: UpsertTemperatureSample :exec
+INSERT INTO temperature_samples (sampled_at, day_key, celsius, source_session_id)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (sampled_at) DO UPDATE SET
+  celsius = EXCLUDED.celsius,
+  day_key = EXCLUDED.day_key,
+  source_session_id = EXCLUDED.source_session_id
+`
+
+type UpsertTemperatureSampleParams struct {
+	SampledAt       pgtype.Timestamptz `json:"sampled_at"`
+	DayKey          pgtype.Date        `json:"day_key"`
+	Celsius         pgtype.Numeric     `json:"celsius"`
+	SourceSessionID string             `json:"source_session_id"`
+}
+
+func (q *Queries) UpsertTemperatureSample(ctx context.Context, arg UpsertTemperatureSampleParams) error {
+	_, err := q.db.Exec(ctx, upsertTemperatureSample,
+		arg.SampledAt,
+		arg.DayKey,
+		arg.Celsius,
+		arg.SourceSessionID,
+	)
+	return err
 }

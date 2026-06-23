@@ -12,29 +12,54 @@ import (
 )
 
 const listDays = `-- name: ListDays :many
-SELECT day_key, steps, pai_score, readiness, spo2_avg, hrv_rmssd,
-       resting_hr, max_hr, resp_rate_avg, stress_avg, sleep_score, sleep_mins,
+SELECT day_key, steps, pai_score,
+       COALESCE(readiness, computed_readiness) AS readiness, spo2_avg, hrv_rmssd,
+       resting_hr, resp_rate_avg, stress_avg, sleep_score, sleep_mins,
        sleep_deep_mins, sleep_rem_mins, sleep_light_mins, temp_avg_c,
-       nap_count, workout_count, activity_session_count, updated_at
+       nap_count, workout_count, activity_session_count, source_session_id, updated_at
 FROM daily_metrics
 WHERE day_key >= $1 AND day_key <= $2
 ORDER BY day_key DESC
 `
 
 type ListDaysParams struct {
-	DayKey   string `json:"day_key"`
-	DayKey_2 string `json:"day_key_2"`
+	DayKey   pgtype.Date `json:"day_key"`
+	DayKey_2 pgtype.Date `json:"day_key_2"`
 }
 
-func (q *Queries) ListDays(ctx context.Context, arg ListDaysParams) ([]DailyMetric, error) {
+type ListDaysRow struct {
+	DayKey               pgtype.Date        `json:"day_key"`
+	Steps                int32              `json:"steps"`
+	PaiScore             pgtype.Int4        `json:"pai_score"`
+	Readiness            pgtype.Int4        `json:"readiness"`
+	Spo2Avg              pgtype.Int4        `json:"spo2_avg"`
+	HrvRmssd             pgtype.Int4        `json:"hrv_rmssd"`
+	RestingHr            pgtype.Int4        `json:"resting_hr"`
+	RespRateAvg          pgtype.Int4        `json:"resp_rate_avg"`
+	StressAvg            pgtype.Int4        `json:"stress_avg"`
+	SleepScore           pgtype.Int4        `json:"sleep_score"`
+	SleepMins            pgtype.Int4        `json:"sleep_mins"`
+	SleepDeepMins        pgtype.Int4        `json:"sleep_deep_mins"`
+	SleepRemMins         pgtype.Int4        `json:"sleep_rem_mins"`
+	SleepLightMins       pgtype.Int4        `json:"sleep_light_mins"`
+	TempAvgC             pgtype.Numeric     `json:"temp_avg_c"`
+	NapCount             int32              `json:"nap_count"`
+	WorkoutCount         int32              `json:"workout_count"`
+	ActivitySessionCount int32              `json:"activity_session_count"`
+	SourceSessionID      pgtype.Text        `json:"source_session_id"`
+	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+}
+
+// readiness prefers the device's 0x39 score, falling back to our computed one.
+func (q *Queries) ListDays(ctx context.Context, arg ListDaysParams) ([]ListDaysRow, error) {
 	rows, err := q.db.Query(ctx, listDays, arg.DayKey, arg.DayKey_2)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []DailyMetric{}
+	items := []ListDaysRow{}
 	for rows.Next() {
-		var i DailyMetric
+		var i ListDaysRow
 		if err := rows.Scan(
 			&i.DayKey,
 			&i.Steps,
@@ -43,7 +68,6 @@ func (q *Queries) ListDays(ctx context.Context, arg ListDaysParams) ([]DailyMetr
 			&i.Spo2Avg,
 			&i.HrvRmssd,
 			&i.RestingHr,
-			&i.MaxHr,
 			&i.RespRateAvg,
 			&i.StressAvg,
 			&i.SleepScore,
@@ -55,6 +79,7 @@ func (q *Queries) ListDays(ctx context.Context, arg ListDaysParams) ([]DailyMetr
 			&i.NapCount,
 			&i.WorkoutCount,
 			&i.ActivitySessionCount,
+			&i.SourceSessionID,
 			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
@@ -70,20 +95,21 @@ func (q *Queries) ListDays(ctx context.Context, arg ListDaysParams) ([]DailyMetr
 const upsertDayMetric = `-- name: UpsertDayMetric :exec
 INSERT INTO daily_metrics (
   day_key, steps, pai_score, readiness, spo2_avg, hrv_rmssd,
-  resting_hr, max_hr, resp_rate_avg, stress_avg, sleep_score, sleep_mins,
+  resting_hr, resp_rate_avg, stress_avg, sleep_score, sleep_mins,
   sleep_deep_mins, sleep_rem_mins, sleep_light_mins, temp_avg_c,
-  nap_count, workout_count, activity_session_count
+  nap_count, workout_count, activity_session_count, source_session_id
 ) VALUES (
   $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
 )
 ON CONFLICT (day_key) DO UPDATE SET
-  steps = EXCLUDED.steps,
+  -- Steps arrive as incremental deltas (minutes since last sync), not the
+  -- full-day cumulative total, so we ADD rather than replace.
+  steps = daily_metrics.steps + GREATEST(EXCLUDED.steps, 0),
   pai_score = COALESCE(EXCLUDED.pai_score, daily_metrics.pai_score),
   readiness = COALESCE(EXCLUDED.readiness, daily_metrics.readiness),
   spo2_avg = COALESCE(EXCLUDED.spo2_avg, daily_metrics.spo2_avg),
   hrv_rmssd = COALESCE(EXCLUDED.hrv_rmssd, daily_metrics.hrv_rmssd),
   resting_hr = COALESCE(EXCLUDED.resting_hr, daily_metrics.resting_hr),
-  max_hr = COALESCE(EXCLUDED.max_hr, daily_metrics.max_hr),
   resp_rate_avg = COALESCE(EXCLUDED.resp_rate_avg, daily_metrics.resp_rate_avg),
   stress_avg = COALESCE(EXCLUDED.stress_avg, daily_metrics.stress_avg),
   sleep_score = COALESCE(EXCLUDED.sleep_score, daily_metrics.sleep_score),
@@ -95,29 +121,30 @@ ON CONFLICT (day_key) DO UPDATE SET
   nap_count = GREATEST(daily_metrics.nap_count, EXCLUDED.nap_count),
   workout_count = GREATEST(daily_metrics.workout_count, EXCLUDED.workout_count),
   activity_session_count = GREATEST(daily_metrics.activity_session_count, EXCLUDED.activity_session_count),
+  source_session_id = EXCLUDED.source_session_id,
   updated_at = NOW()
 `
 
 type UpsertDayMetricParams struct {
-	DayKey         string         `json:"day_key"`
-	Steps          int32          `json:"steps"`
-	PaiScore       pgtype.Int4    `json:"pai_score"`
-	Readiness      pgtype.Int4    `json:"readiness"`
-	Spo2Avg        pgtype.Int4    `json:"spo2_avg"`
-	HrvRmssd       pgtype.Int4    `json:"hrv_rmssd"`
-	RestingHr      pgtype.Int4    `json:"resting_hr"`
-	MaxHr          pgtype.Int4    `json:"max_hr"`
-	RespRateAvg    pgtype.Int4    `json:"resp_rate_avg"`
-	StressAvg      pgtype.Int4    `json:"stress_avg"`
-	SleepScore     pgtype.Int4    `json:"sleep_score"`
-	SleepMins      pgtype.Int4    `json:"sleep_mins"`
-	SleepDeepMins  pgtype.Int4    `json:"sleep_deep_mins"`
-	SleepRemMins   pgtype.Int4    `json:"sleep_rem_mins"`
-	SleepLightMins pgtype.Int4    `json:"sleep_light_mins"`
-	TempAvgC       pgtype.Numeric `json:"temp_avg_c"`
+	DayKey               pgtype.Date    `json:"day_key"`
+	Steps                int32          `json:"steps"`
+	PaiScore             pgtype.Int4    `json:"pai_score"`
+	Readiness            pgtype.Int4    `json:"readiness"`
+	Spo2Avg              pgtype.Int4    `json:"spo2_avg"`
+	HrvRmssd             pgtype.Int4    `json:"hrv_rmssd"`
+	RestingHr            pgtype.Int4    `json:"resting_hr"`
+	RespRateAvg          pgtype.Int4    `json:"resp_rate_avg"`
+	StressAvg            pgtype.Int4    `json:"stress_avg"`
+	SleepScore           pgtype.Int4    `json:"sleep_score"`
+	SleepMins            pgtype.Int4    `json:"sleep_mins"`
+	SleepDeepMins        pgtype.Int4    `json:"sleep_deep_mins"`
+	SleepRemMins         pgtype.Int4    `json:"sleep_rem_mins"`
+	SleepLightMins       pgtype.Int4    `json:"sleep_light_mins"`
+	TempAvgC             pgtype.Numeric `json:"temp_avg_c"`
 	NapCount             int32          `json:"nap_count"`
 	WorkoutCount         int32          `json:"workout_count"`
 	ActivitySessionCount int32          `json:"activity_session_count"`
+	SourceSessionID      pgtype.Text    `json:"source_session_id"`
 }
 
 func (q *Queries) UpsertDayMetric(ctx context.Context, arg UpsertDayMetricParams) error {
@@ -129,7 +156,6 @@ func (q *Queries) UpsertDayMetric(ctx context.Context, arg UpsertDayMetricParams
 		arg.Spo2Avg,
 		arg.HrvRmssd,
 		arg.RestingHr,
-		arg.MaxHr,
 		arg.RespRateAvg,
 		arg.StressAvg,
 		arg.SleepScore,
@@ -141,6 +167,7 @@ func (q *Queries) UpsertDayMetric(ctx context.Context, arg UpsertDayMetricParams
 		arg.NapCount,
 		arg.WorkoutCount,
 		arg.ActivitySessionCount,
+		arg.SourceSessionID,
 	)
 	return err
 }

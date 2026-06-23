@@ -14,9 +14,12 @@ coverage/
 # Go
 vendor/
 
-# Env
+# Env / secrets (never commit)
 .env
+.env.local
+*.env.local
 deploy/.env
+build.env
 
 # OS / IDE
 .DS_Store
@@ -28,3 +31,9 @@ docs/
 CLAUDE.md
 TODO.md
 deploy/DEV.md
+MISSION.md
+NOTES.md
+reference/
+_learnspace/
+lessons/
+.github/

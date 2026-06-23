@@ -11,39 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const deleteHealthSamplesBySession = `-- name: DeleteHealthSamplesBySession :exec
-DELETE FROM health_samples WHERE sync_session_id = $1
-`
-
-func (q *Queries) DeleteHealthSamplesBySession(ctx context.Context, syncSessionID string) error {
-	_, err := q.db.Exec(ctx, deleteHealthSamplesBySession, syncSessionID)
-	return err
-}
-
-const insertHealthSample = `-- name: InsertHealthSample :exec
-INSERT INTO health_samples (sync_session_id, metric, day_key, sampled_at, value)
-VALUES ($1, $2, $3, $4, $5)
-`
-
-type InsertHealthSampleParams struct {
-	SyncSessionID string             `json:"sync_session_id"`
-	Metric        string             `json:"metric"`
-	DayKey        string             `json:"day_key"`
-	SampledAt     pgtype.Timestamptz `json:"sampled_at"`
-	Value         pgtype.Numeric     `json:"value"`
-}
-
-func (q *Queries) InsertHealthSample(ctx context.Context, arg InsertHealthSampleParams) error {
-	_, err := q.db.Exec(ctx, insertHealthSample,
-		arg.SyncSessionID,
-		arg.Metric,
-		arg.DayKey,
-		arg.SampledAt,
-		arg.Value,
-	)
-	return err
-}
-
 const listHealthSamples = `-- name: ListHealthSamples :many
 SELECT metric, day_key, sampled_at, value
 FROM health_samples
@@ -52,13 +19,13 @@ ORDER BY sampled_at ASC
 `
 
 type ListHealthSamplesParams struct {
-	DayKey   string `json:"day_key"`
-	DayKey_2 string `json:"day_key_2"`
+	DayKey   pgtype.Date `json:"day_key"`
+	DayKey_2 pgtype.Date `json:"day_key_2"`
 }
 
 type ListHealthSamplesRow struct {
 	Metric    string             `json:"metric"`
-	DayKey    string             `json:"day_key"`
+	DayKey    pgtype.Date        `json:"day_key"`
 	SampledAt pgtype.Timestamptz `json:"sampled_at"`
 	Value     pgtype.Numeric     `json:"value"`
 }
@@ -86,4 +53,93 @@ func (q *Queries) ListHealthSamples(ctx context.Context, arg ListHealthSamplesPa
 		return nil, err
 	}
 	return items, nil
+}
+
+const listHealthSamplesCompact = `-- name: ListHealthSamplesCompact :many
+WITH computed AS (
+  SELECT
+    metric,
+    day_key,
+    sampled_at,
+    value,
+    (MIN(sampled_at) OVER(PARTITION BY metric, day_key))::timestamptz as day_start
+  FROM health_samples
+  WHERE day_key >= $1 AND day_key <= $2
+)
+SELECT
+  metric,
+  day_key,
+  day_start as start_time,
+  array_agg(EXTRACT(EPOCH FROM (sampled_at - day_start))::int ORDER BY sampled_at)::int[] as offsets,
+  array_agg(value::float8 ORDER BY sampled_at)::float8[] as values
+FROM computed
+GROUP BY metric, day_key, day_start
+ORDER BY metric, day_key ASC
+`
+
+type ListHealthSamplesCompactParams struct {
+	DayKey   pgtype.Date `json:"day_key"`
+	DayKey_2 pgtype.Date `json:"day_key_2"`
+}
+
+type ListHealthSamplesCompactRow struct {
+	Metric    string             `json:"metric"`
+	DayKey    pgtype.Date        `json:"day_key"`
+	StartTime pgtype.Timestamptz `json:"start_time"`
+	Offsets   []int32            `json:"offsets"`
+	Values    []float64          `json:"values"`
+}
+
+func (q *Queries) ListHealthSamplesCompact(ctx context.Context, arg ListHealthSamplesCompactParams) ([]ListHealthSamplesCompactRow, error) {
+	rows, err := q.db.Query(ctx, listHealthSamplesCompact, arg.DayKey, arg.DayKey_2)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListHealthSamplesCompactRow{}
+	for rows.Next() {
+		var i ListHealthSamplesCompactRow
+		if err := rows.Scan(
+			&i.Metric,
+			&i.DayKey,
+			&i.StartTime,
+			&i.Offsets,
+			&i.Values,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const upsertHealthSample = `-- name: UpsertHealthSample :exec
+INSERT INTO health_samples (metric, day_key, sampled_at, value, source_session_id)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (metric, sampled_at) DO UPDATE SET
+  value = EXCLUDED.value,
+  day_key = EXCLUDED.day_key,
+  source_session_id = EXCLUDED.source_session_id
+`
+
+type UpsertHealthSampleParams struct {
+	Metric          string             `json:"metric"`
+	DayKey          pgtype.Date        `json:"day_key"`
+	SampledAt       pgtype.Timestamptz `json:"sampled_at"`
+	Value           pgtype.Numeric     `json:"value"`
+	SourceSessionID string             `json:"source_session_id"`
+}
+
+func (q *Queries) UpsertHealthSample(ctx context.Context, arg UpsertHealthSampleParams) error {
+	_, err := q.db.Exec(ctx, upsertHealthSample,
+		arg.Metric,
+		arg.DayKey,
+		arg.SampledAt,
+		arg.Value,
+		arg.SourceSessionID,
+	)
+	return err
 }
