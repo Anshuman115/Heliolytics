@@ -148,7 +148,8 @@ no I/O. If a file does more than one, split it.
 - HTTPS terminates at Cloudflare; `cloudflared` dials out. **No Caddy, no open
   80/443.** `api`/`web` bind to `127.0.0.1` only
 - Health-gated startup: `api` waits on `db`, `web` waits on `api`
-- Config via env only. There is **no `.env.example`** — see `deploy/deployment.md`
+- Config via env only. `deploy/.env.example` documents every required var; `install.sh`
+  copies it to `.env` on first run
 - `deploy/deploy-web.sh` rebuilds only web, no API downtime
 
 ## Published vs. local-only
