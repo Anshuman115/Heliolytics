@@ -28,7 +28,7 @@ Helio Strap ──BLE──► Flutter (raw .bin + JSON on device)
 
 - **Strap:** 32-char hex key, ECDH + AES (Flutter secure storage, BLE only)
 - **API (app + server):** `HELIOLYTICS_SIGNING_SECRET` signs short-lived HMAC tokens (`X-Heliolytics-Token`, 5-minute window, nonce replay rejected)
-- **Web dashboard:** password sign-in (`HELIOLYTICS_WEB_PASSWORD`); signing secret stays server-side in Docker
+- **Web dashboard:** scrypt password sign-in plus an independently signed browser session; API signing stays server-side
 - **Reparse:** disabled by default; enable with `REPARSE_ENABLED=true` + optional `REPARSE_SECRET` header
 
 ## TLS

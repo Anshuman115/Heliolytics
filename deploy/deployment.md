@@ -24,13 +24,20 @@ heliolytics/
 | Variable | Used by | Purpose |
 |----------|---------|---------|
 | `HELIOLYTICS_SIGNING_SECRET` | API, Web, mobile app | HMAC auth — the app calls this **API key** in Settings |
-| `HELIOLYTICS_WEB_PASSWORD` | Web login page | Dashboard password |
+| `HELIOLYTICS_WEB_PASSWORD_HASH` | Web login page | Scrypt password verifier |
+| `HELIOLYTICS_SESSION_SECRET` | Web | Browser-session signing |
 | `POSTGRES_PASSWORD` | PostgreSQL | Database password |
 
-Generate strong values (run three times):
+Generate the API, browser-session, and database secrets separately:
 
 ```bash
 openssl rand -hex 32
+```
+
+Generate the login hash from the Web repo. The password is read without echoing:
+
+```bash
+npm run auth:hash-password
 ```
 
 Save them in a password manager. **Never commit `deploy/.env`.**
@@ -55,7 +62,8 @@ Edit `deploy/.env`:
 
 ```env
 HELIOLYTICS_SIGNING_SECRET=<openssl rand -hex 32>
-HELIOLYTICS_WEB_PASSWORD=<your web login password>
+HELIOLYTICS_WEB_PASSWORD_HASH=<npm run auth:hash-password output>
+HELIOLYTICS_SESSION_SECRET=<openssl rand -hex 32>
 POSTGRES_PASSWORD=<your db password>
 
 API_PORT=8080
@@ -198,7 +206,8 @@ chmod 600 .env
 
 ```env
 HELIOLYTICS_SIGNING_SECRET=<openssl rand -hex 32>
-HELIOLYTICS_WEB_PASSWORD=<strong password>
+HELIOLYTICS_WEB_PASSWORD_HASH=<npm run auth:hash-password output>
+HELIOLYTICS_SESSION_SECRET=<openssl rand -hex 32>
 POSTGRES_PASSWORD=<openssl rand -hex 32>
 CLOUDFLARE_TUNNEL_TOKEN=<paste token from step 2.2>
 REPARSE_ENABLED=false
