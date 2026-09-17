@@ -1,6 +1,6 @@
-# CLAUDE.md — Heliolytics (Go server)
+# AGENTS.md : Heliolytics (Go server)
 
-The Go backend for Heliolytics. Public repo. Current line: `v6`.
+The Go backend for Heliolytics. Public repo. See the checked-out revision for version status.
 
 ## Project Identity
 
@@ -14,15 +14,16 @@ web image from `../../Heliolytics_Web`):
 
 | Repo | Role |
 |------|------|
-| `Heliolytics` (this) | Go API — parses, stores, serves. **The hub** |
-| `Heliolytics_App` | Flutter — BLE sync, uploads raw session bytes |
-| `Heliolytics_Web` | Next.js dashboard — reads metrics |
+| `Heliolytics` (this) | Go API : parses, stores, serves. **The hub** |
+| `Heliolytics_App` | Flutter : BLE sync, uploads raw session bytes |
+| `Heliolytics_Web` | Next.js dashboard : reads metrics |
 
 **The core split: all health parsing happens here.** The phone uploads raw strap
-bytes and never parses or persists health data. That's why raw blobs are stored
-forever and can be re-parsed.
+bytes and does not parse historical health blobs. It may cache parsed server
+responses. Raw blobs have no automatic retention policy; the current reparse
+endpoint selects the latest stored session.
 
-## Docs — read before changing a feature
+## Docs : read before changing a feature
 
 | Doc | When |
 |-----|------|
@@ -33,30 +34,31 @@ forever and can be re-parsed.
 | [docs/features/storage-and-schema.md](docs/features/storage-and-schema.md) | Tables, hypertables, migrations |
 | [docs/features/deploy.md](docs/features/deploy.md) | Compose stack, tunnel, secrets |
 
-`docs/features/` is published. `docs/reference/` — the cross-repo wire contract,
-per-repo architecture manuals, glossary, and debug cookbook — is **local-only and
-gitignored**. It's the deepest material in the system; consult it locally, but never
-cite it from a published file.
+`docs/features/` is published. `docs/reference/` : the cross-repo wire contract,
+per-repo architecture manuals, glossary, and debug cookbook : is **local-only and
+gitignored**. These are historical references. Start with the current feature guides; never
+cite local-only files from a published file.
 
 ## Actual Folder Structure
 
 ```
 Heliolytics/
-├── cmd/server/main.go        # Entry point — wire deps, start
+├── cmd/server/main.go        # Entry point : wire deps, start
 ├── internal/
 │   ├── api/                  # HTTP handlers (flat) + routes.go
 │   ├── auth/                 # Token sign/verify, nonce store
 │   ├── config/               # Env config
 │   ├── middleware/           # hmac, logging, ratelimit
-│   ├── parse/                # Blob → records → day rollups
+│   ├── parse/                # Blob decoding and ingest orchestration
+│   ├── rollup/               # Stored observations → daily summaries
 │   ├── readiness/            # Recovery score (pure, no I/O)
 │   └── store/                # pgx data layer
-│       └── db/               # sqlc GENERATED — never hand-edit
+│       └── db/               # sqlc GENERATED : never hand-edit
 ├── migrations/               # Numbered incremental changes
 ├── sql/queries/              # Hand-written SQL, sqlc input
 ├── schema.sql                # Full from-scratch schema
 ├── scripts/                  # Local helpers (gitignored)
-└── deploy/                   # compose, Dockerfile, deploy scripts
+└── deploy/                   # compose and deploy scripts (Dockerfile at root)
 ```
 
 ## The Single Most Important Rule
@@ -68,12 +70,12 @@ no I/O. If a file does more than one, split it.
 
 ## Naming
 
-- Packages: short, lowercase, no underscores — `api`, `store`, `parse`, `auth`
+- Packages: short, lowercase, no underscores : `api`, `store`, `parse`, `auth`
 - Files: `snake_case.go`
 - Types/interfaces: `PascalCase`
 - Functions/methods: `camelCase` (private), `PascalCase` (exported)
 - Constants: `PascalCase` exported, `camelCase` package-private
-- Error variables: `Err` prefix — `ErrNotFound`, `ErrUnauthorized`
+- Error variables: `Err` prefix : `ErrNotFound`, `ErrUnauthorized`
 
 ## Code Style
 
@@ -87,57 +89,58 @@ no I/O. If a file does more than one, split it.
 ## API Design
 
 - REST + JSON, versioned `/api/v1/...`
-- **Responses are plain JSON — there is no `{data, error}` envelope.** Errors are
+- **Responses are plain JSON : there is no `{data, error}` envelope.** Errors are
   HTTP status + plain text
 - Auth: `X-Heliolytics-Token` only. **No Firebase, no JWT, no user identity**
-- `GET /health` is deliberately **outside** the auth chain — healthchecks need it
+- `GET /health` is deliberately **outside** the auth chain : healthchecks need it
 
 ## Security (non-negotiable)
 
 - Every data endpoint requires a valid signed token. `/health` is the one exception
 - HMAC-SHA256 over `"ts:nonce"`; replay defense = 5-min window + nonce store
-- Constant-time comparison (`crypto/subtle`) — never `==` on a signature
+- Constant-time comparison (`crypto/subtle`) : never `==` on a signature
 - No secrets in code. Environment only
 - Parameterized queries only. No string concatenation into SQL
 - Never log raw sensor data or tokens
 - `TRUST_PROXY=true` is only safe because Cloudflare is genuinely in front. Off, and
   every request rate-limits as one client; on without a trusted proxy, anyone spoofs
   their IP via a header
-- `/api/v1/reparse` is off by default and needs its own `REPARSE_SECRET` — it
-  rewrites history
+- `/api/v1/reparse` is off by default and should be configured with an independent `REPARSE_SECRET`.
+  The code enforces the extra header only when that secret is non-empty
 
 ## Database
 
 - **PostgreSQL + TimescaleDB.** `schema.sql` is the from-scratch definition;
-  `migrations/` carries an existing DB forward. **Both must end at the same shape**
-- The 4 per-sample tables are hypertables on `sampled_at`. Rollup tables are plain
-- Raw strap bytes live in `raw_type_blobs` — kept forever, they make reparse possible
+  `migrations/` carries an existing DB forward. **Both must end at the same shape**. Startup does not run numbered migrations
+- The eight per-sample tables are hypertables on `sampled_at`. Rollup tables are plain
+- Raw strap bytes live in `raw_type_blobs` : no automatic retention policy; they enable reparse
 - Most queries via **sqlc**: edit `sql/queries/*.sql`, regenerate. **Never hand-edit
   `internal/store/db/`**. Some store code (`coverage.go`, `readiness.go`) is
   deliberately hand-written pgx where codegen doesn't fit
-- Writes upsert — re-uploading a sync session must stay idempotent
+- Writes upsert : re-uploading a sync session must stay idempotent
 - `deploy/reset-db.sh` and `docker compose down -v` **destroy all data**
 
-## Cross-repo invariants — break these and another repo breaks
+## Cross-repo invariants : break these and another repo breaks
 
 - **`X-Heliolytics-Token` format** (`ts.nonce.sig`) must stay byte-identical across
   `internal/auth/signing.go`, app `lib/services/network/heliolytics_token.dart`, and
   web `lib/api/signing.ts`
 - **This server owns sync state.** `/metrics/coverage` is the sole authority on what
-  is ingested — the phone keeps no bookmarks, so a reinstall must resume correctly
+  is ingested : the phone keeps no bookmarks, so a reinstall must resume correctly
 - Coverage must measure sessions by **end** time, not start, or the phone re-fetches
-- Changing readiness weights silently rewrites the meaning of every historical score
+- Changing readiness weights changes future and recomputed scores. Existing stored
+  scores remain unchanged until recalculated
 
 ## Testing
 
-- Unit: parsers, readiness, domain logic — no DB, no HTTP
+- Unit: parsers, readiness, domain logic : no DB, no HTTP
 - Integration: `httptest` for handlers; real queries against a test schema
 - Dump-replay tests (`dump_integration_test.go`, `pipeline_e2e_test.go`) run real
-  captured sessions through the pipeline — the strongest signal we have
+  captured sessions through the pipeline : the strongest signal we have
 
 ## Git
 
-- Commits: `type(scope): message` — e.g., `feat(api): add sync endpoint`
+- Commits: `type(scope): message` : e.g., `feat(api): add sync endpoint`
 - Types: `feat`, `fix`, `chore`, `refactor`, `test`, `docs`
 - One logical change per commit. No WIP commits on main.
 
@@ -154,11 +157,11 @@ no I/O. If a file does more than one, split it.
 
 ## Published vs. local-only
 
-This repo is public. `CLAUDE.md` and `docs/features/` **are published** — write them
+This repo is public. `AGENTS.md` and `docs/features/` **are published** : write them
 for an outside reader, not just for yourself.
 
-Also tracked and public: `README.md`, `ARCHITECTURE.md`, `SCHEMA_DESIGN.md`,
-`deploy/deployment.md`.
+Also tracked and public: `README.md`, `docs/local/ARCHITECTURE.md`, `docs/local/SCHEMA_DESIGN.md`,
+`docs/local/deployment.md`.
 
 Local-only (in `.gitignore`, on disk for personal reference only):
 
@@ -172,7 +175,7 @@ Local-only (in `.gitignore`, on disk for personal reference only):
 | `_learnspace/`, `lessons/` | Learning artifacts |
 
 **Never cite a local-only path from a published file.** A published doc that links to
-`docs/reference/` is a broken link for everyone who clones the repo — describe the
+`docs/reference/` is a broken link for everyone who clones the repo : describe the
 thing in prose instead.
 
 ## Attribution and legal hygiene
